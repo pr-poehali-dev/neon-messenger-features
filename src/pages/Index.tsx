@@ -92,6 +92,16 @@ export default function Index() {
     setSidebarOpen(true);
   }, [currentUser, activeChat, chats, messages, saveChats, saveMessages]);
 
+  const handleDeleteChatFromList = useCallback((userId: string) => {
+    if (!currentUser) return;
+    const updated = chats.filter(c => c.userId !== userId);
+    saveChats(updated, currentUser.id);
+    if (activeChat === userId) {
+      setActiveChat(null);
+      setSidebarOpen(true);
+    }
+  }, [currentUser, chats, activeChat, saveChats]);
+
   const handleBlockUser = useCallback(() => {
     if (!currentUser || !activeChat) return;
     const updated = chats.map(c => c.userId === activeChat ? { ...c, blocked: !c.blocked } : c);
@@ -195,6 +205,7 @@ export default function Index() {
               activeChat={activeChat}
               onSelectChat={handleSelectChat}
               onNewChat={() => setShowNewChat(true)}
+              onDeleteChat={handleDeleteChatFromList}
             />
           )}
           {tab === 'profile' && (
