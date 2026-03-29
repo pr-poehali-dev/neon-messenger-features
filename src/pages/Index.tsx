@@ -211,15 +211,21 @@ export default function Index() {
 
       {/* Chat area */}
       <div className="flex-1 flex flex-col h-full overflow-hidden relative">
-        {/* Toggle sidebar button */}
+        {/* Header strip when sidebar closed */}
         {!sidebarOpen && (
-          <button
-            onClick={() => setSidebarOpen(true)}
-            className="absolute top-4 left-4 z-20 w-8 h-8 flex items-center justify-center transition-all hover:scale-110"
-            style={{ border: '1px solid rgba(0,212,255,0.3)', borderRadius: '2px', color: '#00d4ff', background: 'rgba(5,10,15,0.9)' }}
-          >
-            <Icon name="PanelLeft" size={15} />
-          </button>
+          <div className="flex items-center gap-2 px-3 py-2 flex-shrink-0" style={{ borderBottom: '1px solid rgba(0,212,255,0.08)', background: 'rgba(0,5,10,0.95)' }}>
+            <button
+              onClick={() => { setSidebarOpen(true); setActiveChat(null); }}
+              className="flex items-center gap-2 px-2 py-1 text-xs font-orbitron transition-all hover:opacity-80"
+              style={{ color: '#00d4ff', border: '1px solid rgba(0,212,255,0.2)', borderRadius: '2px' }}
+            >
+              <Icon name="ChevronLeft" size={13} /> НАЗАД
+            </button>
+            <div className="w-5 h-5 flex items-center justify-center flex-shrink-0 ml-1" style={{ border: '1px solid rgba(0,212,255,0.3)', borderRadius: '2px' }}>
+              <Icon name="Shield" size={11} style={{ color: '#00d4ff' }} />
+            </div>
+            <span className="font-orbitron font-bold text-xs text-neon-blue tracking-widest">NEXUS</span>
+          </div>
         )}
 
         {activeChat && currentUser ? (
@@ -234,7 +240,7 @@ export default function Index() {
             onUpdateChat={handleUpdateChat}
           />
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center gap-4 cyber-grid-bg h-full">
+          <div className="flex-1 flex flex-col items-center justify-center gap-4 cyber-grid-bg h-full relative">
             <div className="text-center space-y-3">
               <div className="w-16 h-16 flex items-center justify-center mx-auto" style={{ border: '2px solid rgba(0,212,255,0.2)', borderRadius: '2px', boxShadow: '0 0 30px rgba(0,212,255,0.08)', background: 'rgba(0,212,255,0.03)' }}>
                 <Icon name="MessageSquare" size={28} style={{ color: 'rgba(0,212,255,0.4)' }} />
@@ -247,14 +253,16 @@ export default function Index() {
               </div>
             </div>
 
-            {/* Sidebar toggle */}
-            <button
-              onClick={() => setSidebarOpen(!sidebarOpen)}
-              className="absolute top-4 right-4 w-8 h-8 flex items-center justify-center transition-all hover:scale-110"
-              style={{ border: '1px solid rgba(0,212,255,0.15)', borderRadius: '2px', color: 'rgba(0,212,255,0.4)', background: 'rgba(5,10,15,0.5)' }}
-            >
-              <Icon name={sidebarOpen ? 'PanelLeftClose' : 'PanelLeft'} size={15} />
-            </button>
+            {/* Sidebar toggle — only when sidebar is open */}
+            {sidebarOpen && (
+              <button
+                onClick={() => setSidebarOpen(false)}
+                className="absolute top-4 right-4 w-8 h-8 flex items-center justify-center transition-all hover:scale-110"
+                style={{ border: '1px solid rgba(0,212,255,0.15)', borderRadius: '2px', color: 'rgba(0,212,255,0.4)', background: 'rgba(5,10,15,0.5)' }}
+              >
+                <Icon name="PanelLeftClose" size={15} />
+              </button>
+            )}
           </div>
         )}
       </div>

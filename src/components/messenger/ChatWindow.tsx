@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, createPortal } from 'react';
 import Icon from '@/components/ui/icon';
 import { User, Message, Chat } from './types';
 
@@ -37,6 +37,7 @@ export default function ChatWindow({ currentUser, chatUserId, chat, messages, on
   const [customDesc, setCustomDesc] = useState(chat?.customDescription || '');
   const [showAttach, setShowAttach] = useState(false);
   const [mediaError, setMediaError] = useState('');
+  const [menuPos, setMenuPos] = useState({ top: 0, right: 0 });
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -45,6 +46,7 @@ export default function ChatWindow({ currentUser, chatUserId, chat, messages, on
   const chunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
   const videoPreviewRef = useRef<HTMLVideoElement>(null);
+  const menuBtnRef = useRef<HTMLButtonElement>(null);
 
   const allUsers = JSON.parse(localStorage.getItem('nexus_users') || '[]') as User[];
   const chatUser = allUsers.find(u => u.id === chatUserId);
@@ -66,6 +68,22 @@ export default function ChatWindow({ currentUser, chatUserId, chat, messages, on
     setCustomName(chat?.customName || '');
     setCustomDesc(chat?.customDescription || '');
   }, [chat?.customName, chat?.customDescription]);
+
+  // ESC closes overlays
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowMenu(false);
+        setShowDeleteConfirm(null);
+        setShowVoiceEffects(false);
+        setShowAttach(false);
+        setEditName(false);
+        setEditDesc(false);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -250,19 +268,29 @@ export default function ChatWindow({ currentUser, chatUserId, chat, messages, on
             </div>
           )}
           <button
-            onClick={() => setShowMenu(!showMenu)}
+            ref={menuBtnRef}
+            onClick={() => {
+              if (!showMenu && menuBtnRef.current) {
+                const rect = menuBtnRef.current.getBoundingClientRect();
+                setMenuPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right });
+              }
+              setShowMenu(!showMenu);
+            }}
             className="w-7 h-7 flex items-center justify-center transition-all hover:scale-110 ml-1"
             style={{ color: 'rgba(0,212,255,0.6)' }}
           >
             <Icon name="MoreVertical" size={16} />
           </button>
         </div>
+      </div>
 
-        {/* Context menu */}
-        {showMenu && (
+      {/* Context menu — portal, always on top */}
+      {showMenu && createPortal(
+        <>
+          <div className="fixed inset-0 z-[90]" onClick={() => setShowMenu(false)} />
           <div
-            className="absolute right-4 top-12 z-50 w-52 py-1 animate-scale-in"
-            style={{ background: 'rgba(5,10,20,0.98)', border: '1px solid rgba(0,212,255,0.2)', borderRadius: '2px', boxShadow: '0 8px 32px rgba(0,0,0,0.5)' }}
+            className="fixed z-[91] w-52 py-1 animate-scale-in"
+            style={{ top: menuPos.top, right: menuPos.right, background: 'rgba(5,10,20,0.99)', border: '1px solid rgba(0,212,255,0.25)', borderRadius: '2px', boxShadow: '0 8px 40px rgba(0,0,0,0.7)' }}
           >
             <button
               onClick={() => { setShowMenu(false); setShowVoiceEffects(true); }}
@@ -276,7 +304,8 @@ export default function ChatWindow({ currentUser, chatUserId, chat, messages, on
               className="w-full flex items-center gap-3 px-4 py-2.5 text-xs font-ibm hover:bg-red-500/10 transition-all"
               style={{ color: isBlocked ? '#00ff88' : '#ff4466' }}
             >
-              <Icon name={isBlocked ? 'ShieldCheck' : 'Ban'} size={13} /> {isBlocked ? 'Разблокировать' : 'Заблокировать'}
+              <Icon name={isBlocked ? 'ShieldCheck' : 'Ban'} size={13} />
+              {isBlocked ? 'Разблокировать' : 'Заблокировать'}
             </button>
             <div style={{ height: '1px', background: 'rgba(0,212,255,0.1)', margin: '2px 0' }} />
             <button
@@ -294,8 +323,9 @@ export default function ChatWindow({ currentUser, chatUserId, chat, messages, on
               <Icon name="Trash" size={13} /> Удалить у обоих
             </button>
           </div>
-        )}
-      </div>
+        </>,
+        document.body
+      )}
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-2 cyber-grid-bg" onClick={() => setShowMenu(false)}>
@@ -561,73 +591,83 @@ export default function ChatWindow({ currentUser, chatUserId, chat, messages, on
         </div>
       )}
 
-      {/* Delete confirm */}
-      {showDeleteConfirm && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)' }}>
-          <div className="p-6 max-w-sm w-full mx-4 animate-scale-in" style={{ background: 'rgba(5,10,15,0.98)', border: '1px solid rgba(255,68,68,0.3)', borderRadius: '2px' }}>
+      {/* Delete confirm — portal */}
+      {showDeleteConfirm && createPortal(
+        <div className="fixed inset-0 z-[95] flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(4px)' }}>
+          <div className="p-6 max-w-sm w-full mx-4 animate-scale-in" style={{ background: 'rgba(5,10,15,0.98)', border: '1px solid rgba(255,68,68,0.3)', borderRadius: '2px', boxShadow: '0 0 40px rgba(255,0,68,0.15)' }}>
             <div className="flex items-center gap-2 mb-3">
               <Icon name="AlertTriangle" size={18} style={{ color: '#ff4444' }} />
               <h3 className="font-orbitron font-bold text-sm" style={{ color: '#ff4444' }}>УДАЛЕНИЕ ЧАТА</h3>
             </div>
-            <p className="text-xs font-ibm mb-4" style={{ color: 'rgba(0,212,255,0.6)' }}>
-              {showDeleteConfirm === 'both' ? 'Удалить чат и все сообщения у обоих пользователей?' : 'Удалить чат только у себя?'}
+            <p className="text-xs font-ibm mb-4 leading-relaxed" style={{ color: 'rgba(0,212,255,0.6)' }}>
+              {showDeleteConfirm === 'both'
+                ? 'Удалить чат и все сообщения у обоих пользователей? Это действие необратимо.'
+                : 'Удалить чат только у себя? Собеседник по-прежнему увидит историю.'}
             </p>
             <div className="flex gap-3">
               <button
                 onClick={() => { onDeleteChat(showDeleteConfirm === 'both'); setShowDeleteConfirm(null); }}
-                className="flex-1 py-2 text-xs font-orbitron font-bold transition-all"
+                className="flex-1 py-2 text-xs font-orbitron font-bold transition-all hover:opacity-90 active:scale-95"
                 style={{ background: 'rgba(255,0,68,0.15)', color: '#ff4444', border: '1px solid rgba(255,0,68,0.4)', borderRadius: '2px' }}
               >
                 УДАЛИТЬ
               </button>
               <button
                 onClick={() => setShowDeleteConfirm(null)}
-                className="flex-1 py-2 text-xs font-orbitron font-bold transition-all"
+                className="flex-1 py-2 text-xs font-orbitron font-bold transition-all hover:opacity-80"
                 style={{ background: 'transparent', color: 'rgba(0,212,255,0.6)', border: '1px solid rgba(0,212,255,0.2)', borderRadius: '2px' }}
               >
                 ОТМЕНА
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
-      {/* Voice effects */}
-      {showVoiceEffects && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)' }}>
-          <div className="p-6 max-w-xs w-full mx-4 animate-scale-in" style={{ background: 'rgba(5,10,15,0.98)', border: '1px solid rgba(0,212,255,0.2)', borderRadius: '2px' }}>
-            <h3 className="font-orbitron font-bold text-sm mb-1 text-neon-blue">ЭФФЕКТЫ ГОЛОСА</h3>
+      {/* Voice effects — portal */}
+      {showVoiceEffects && createPortal(
+        <div className="fixed inset-0 z-[95] flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(4px)' }}>
+          <div className="p-6 max-w-xs w-full mx-4 animate-scale-in" style={{ background: 'rgba(5,10,15,0.98)', border: '1px solid rgba(0,212,255,0.2)', borderRadius: '2px', boxShadow: '0 0 40px rgba(0,212,255,0.1)' }}>
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="font-orbitron font-bold text-sm text-neon-blue">ЭФФЕКТЫ ГОЛОСА</h3>
+              <button onClick={() => setShowVoiceEffects(false)} style={{ color: 'rgba(0,212,255,0.4)' }}>
+                <Icon name="X" size={14} />
+              </button>
+            </div>
             <p className="text-xs font-mono-tech mb-4" style={{ color: 'rgba(0,212,255,0.3)' }}>Применяются к следующим записям</p>
             <div className="space-y-2 mb-4">
               {VOICE_EFFECTS.map(e => (
                 <button
                   key={e.id}
                   onClick={() => setVoiceEffectId(e.id)}
-                  className="w-full py-2 px-3 text-xs font-ibm text-left transition-all flex items-center gap-2"
+                  className="w-full py-2 px-3 text-xs font-ibm text-left transition-all flex items-center gap-2 hover:opacity-90 active:scale-98"
                   style={{
                     background: voiceEffectId === e.id ? 'rgba(0,212,255,0.12)' : 'transparent',
                     border: voiceEffectId === e.id ? '1px solid rgba(0,212,255,0.5)' : '1px solid rgba(0,212,255,0.1)',
                     borderRadius: '2px',
                     color: voiceEffectId === e.id ? '#00d4ff' : 'rgba(0,212,255,0.5)',
+                    boxShadow: voiceEffectId === e.id ? '0 0 8px rgba(0,212,255,0.15)' : 'none',
                   }}
                 >
                   <Icon name={voiceEffectId === e.id ? 'CheckCircle' : 'Circle'} size={12} />
-                  {e.label}
+                  <span>{e.label}</span>
                   <span className="ml-auto font-mono-tech" style={{ fontSize: '9px', color: 'rgba(0,212,255,0.3)' }}>
-                    pitch×{e.pitch}
+                    pitch ×{e.pitch}
                   </span>
                 </button>
               ))}
             </div>
             <button
               onClick={() => setShowVoiceEffects(false)}
-              className="w-full py-2 text-xs font-orbitron font-bold"
+              className="w-full py-2 text-xs font-orbitron font-bold transition-all hover:opacity-90"
               style={{ background: '#00d4ff', color: '#050a0f', borderRadius: '2px', boxShadow: '0 0 15px rgba(0,212,255,0.4)' }}
             >
               ПРИМЕНИТЬ
             </button>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       <input type="file" ref={fileInputRef} className="hidden" onChange={handleFile} accept="*/*" />
