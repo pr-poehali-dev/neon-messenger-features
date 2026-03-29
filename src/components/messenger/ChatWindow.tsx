@@ -13,24 +13,38 @@ interface ChatWindowProps {
   onUpdateChat: (data: Partial<Chat>) => void;
 }
 
-const VOICE_EFFECTS = ['Обычный', 'Робот', 'Эхо', 'Глубокий', 'Высокий'];
+const VOICE_EFFECTS = [
+  { id: 'normal', label: 'Обычный', pitch: 1, rate: 1 },
+  { id: 'robot', label: 'Робот', pitch: 0.5, rate: 0.85 },
+  { id: 'echo', label: 'Эхо', pitch: 1.1, rate: 0.95 },
+  { id: 'deep', label: 'Глубокий', pitch: 0.6, rate: 0.9 },
+  { id: 'high', label: 'Высокий', pitch: 2, rate: 1.1 },
+];
+
+type RecordType = 'voice' | 'video' | 'circle';
 
 export default function ChatWindow({ currentUser, chatUserId, chat, messages, onSendMessage, onDeleteChat, onBlockUser, onUpdateChat }: ChatWindowProps) {
   const [text, setText] = useState('');
   const [showMenu, setShowMenu] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<null | 'self' | 'both'>(null);
   const [showVoiceEffects, setShowVoiceEffects] = useState(false);
-  const [voiceEffect, setVoiceEffect] = useState('Обычный');
-  const [recording, setRecording] = useState<null | 'voice' | 'video' | 'circle'>(null);
+  const [voiceEffectId, setVoiceEffectId] = useState('normal');
+  const [recording, setRecording] = useState<null | RecordType>(null);
   const [recordingTime, setRecordingTime] = useState(0);
   const [editName, setEditName] = useState(false);
   const [editDesc, setEditDesc] = useState(false);
   const [customName, setCustomName] = useState(chat?.customName || '');
   const [customDesc, setCustomDesc] = useState(chat?.customDescription || '');
   const [showAttach, setShowAttach] = useState(false);
+  const [mediaError, setMediaError] = useState('');
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
+  const videoPreviewRef = useRef<HTMLVideoElement>(null);
 
   const allUsers = JSON.parse(localStorage.getItem('nexus_users') || '[]') as User[];
   const chatUser = allUsers.find(u => u.id === chatUserId);
@@ -53,25 +67,93 @@ export default function ChatWindow({ currentUser, chatUserId, chat, messages, on
     setCustomDesc(chat?.customDescription || '');
   }, [chat?.customName, chat?.customDescription]);
 
-  const startRecording = (type: 'voice' | 'video' | 'circle') => {
-    setRecording(type);
-    setRecordingTime(0);
-    recordTimerRef.current = setInterval(() => setRecordingTime(t => t + 1), 1000);
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      stopStream();
+      if (recordTimerRef.current) clearInterval(recordTimerRef.current);
+    };
+  }, []);
+
+  const stopStream = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop());
+      streamRef.current = null;
+    }
   };
 
-  const stopRecording = () => {
+  const startRecording = async (type: RecordType) => {
+    setMediaError('');
+    chunksRef.current = [];
+
+    try {
+      const isVideo = type === 'video' || type === 'circle';
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: isVideo ? { facingMode: 'user', width: 320, height: 320 } : false,
+      });
+      streamRef.current = stream;
+
+      if (isVideo && videoPreviewRef.current) {
+        videoPreviewRef.current.srcObject = stream;
+        videoPreviewRef.current.play();
+      }
+
+      const mimeType = isVideo
+        ? (MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm')
+        : (MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm');
+
+      const mr = new MediaRecorder(stream, { mimeType });
+      mediaRecorderRef.current = mr;
+
+      mr.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+      mr.start(100);
+
+      setRecording(type);
+      setRecordingTime(0);
+      recordTimerRef.current = setInterval(() => setRecordingTime(t => t + 1), 1000);
+    } catch {
+      setMediaError('Нет доступа к микрофону/камере. Разрешите в браузере.');
+    }
+  };
+
+  const stopRecording = useCallback(() => {
     if (recordTimerRef.current) clearInterval(recordTimerRef.current);
-    if (recording) {
+    const mr = mediaRecorderRef.current;
+    if (!mr || !recording) {
+      setRecording(null);
+      setRecordingTime(0);
+      stopStream();
+      return;
+    }
+
+    const capturedType = recording;
+    const capturedTime = recordingTime;
+
+    mr.onstop = () => {
+      const isVideo = capturedType === 'video' || capturedType === 'circle';
+      const mime = isVideo ? 'video/webm' : 'audio/webm';
+      const blob = new Blob(chunksRef.current, { type: mime });
+      const url = URL.createObjectURL(blob);
+
       onSendMessage({
         fromId: currentUser.id,
         toId: chatUserId,
-        type: recording === 'voice' ? 'voice' : recording === 'video' ? 'video' : 'videocircle',
-        duration: recordingTime,
+        type: capturedType === 'voice' ? 'voice' : capturedType === 'video' ? 'video' : 'videocircle',
+        fileUrl: url,
+        fileName: isVideo ? 'video.webm' : 'voice.webm',
+        fileSize: blob.size,
+        duration: capturedTime,
       });
-    }
+
+      stopStream();
+      chunksRef.current = [];
+    };
+
+    mr.stop();
     setRecording(null);
     setRecordingTime(0);
-  };
+  }, [recording, recordingTime, currentUser.id, chatUserId, onSendMessage]);
 
   const handleSend = useCallback(() => {
     if (!text.trim()) return;
@@ -107,6 +189,7 @@ export default function ChatWindow({ currentUser, chatUserId, chat, messages, on
   const formatSize = (b: number) => b > 1024 * 1024 ? `${(b / 1024 / 1024).toFixed(1)} МБ` : `${(b / 1024).toFixed(0)} КБ`;
 
   const isBlocked = chat?.blocked;
+  const isVideoRec = recording === 'video' || recording === 'circle';
 
   return (
     <div className="flex flex-col h-full relative" style={{ background: 'rgba(5,10,15,0.98)' }}>
@@ -242,65 +325,88 @@ export default function ChatWindow({ currentUser, chatUserId, chat, messages, on
                 }}
               >
                 {msg.type === 'text' && (
-                  <p className="text-sm font-ibm break-words" style={{ color: msg.textColor || (isOut ? '#00d4ff' : '#c084fc') }}>
+                  <p className="text-sm font-ibm break-words whitespace-pre-wrap" style={{ color: msg.textColor || (isOut ? '#00d4ff' : '#c084fc') }}>
                     {msg.text}
                   </p>
                 )}
+
                 {msg.type === 'voice' && (
-                  <div className="flex items-center gap-2">
-                    <button
-                      className="w-7 h-7 flex items-center justify-center rounded-full transition-all hover:scale-110"
-                      style={{ background: isOut ? 'rgba(0,212,255,0.3)' : 'rgba(168,85,247,0.3)', color: isOut ? '#00d4ff' : '#c084fc' }}
-                    >
-                      <Icon name="Play" size={12} />
-                    </button>
-                    <div className="flex gap-px">
-                      {[...Array(16)].map((_, i) => (
-                        <div key={i} className="w-0.5 rounded-full" style={{ height: `${8 + Math.random() * 16}px`, background: isOut ? 'rgba(0,212,255,0.6)' : 'rgba(168,85,247,0.6)' }} />
-                      ))}
-                    </div>
-                    <span className="text-xs font-mono-tech" style={{ color: isOut ? 'rgba(0,212,255,0.6)' : 'rgba(168,85,247,0.6)' }}>
-                      {formatDur(msg.duration || 0)}
-                    </span>
-                    <Icon name="Mic" size={10} style={{ color: isOut ? 'rgba(0,212,255,0.4)' : 'rgba(168,85,247,0.4)' }} />
+                  <div className="flex items-center gap-2 min-w-[180px]">
+                    {msg.fileUrl ? (
+                      <AudioPlayer url={msg.fileUrl} isOut={isOut} duration={msg.duration || 0} />
+                    ) : (
+                      <>
+                        <div className="w-7 h-7 flex items-center justify-center rounded-full flex-shrink-0" style={{ background: isOut ? 'rgba(0,212,255,0.2)' : 'rgba(168,85,247,0.2)', color: isOut ? '#00d4ff' : '#c084fc' }}>
+                          <Icon name="Mic" size={12} />
+                        </div>
+                        <div className="flex gap-px">
+                          {[...Array(16)].map((_, i) => (
+                            <div key={i} className="w-0.5 rounded-full" style={{ height: `${8 + Math.sin(i) * 8 + 4}px`, background: isOut ? 'rgba(0,212,255,0.5)' : 'rgba(168,85,247,0.5)' }} />
+                          ))}
+                        </div>
+                        <span className="text-xs font-mono-tech" style={{ color: isOut ? 'rgba(0,212,255,0.6)' : 'rgba(168,85,247,0.6)' }}>{formatDur(msg.duration || 0)}</span>
+                      </>
+                    )}
                   </div>
                 )}
+
                 {(msg.type === 'video' || msg.type === 'videocircle') && (
-                  <div className="flex items-center gap-2">
-                    <div
-                      className="w-12 h-12 flex items-center justify-center flex-shrink-0"
-                      style={{
-                        background: 'rgba(0,0,0,0.4)',
-                        border: isOut ? '1px solid rgba(0,212,255,0.3)' : '1px solid rgba(168,85,247,0.3)',
-                        borderRadius: msg.type === 'videocircle' ? '50%' : '2px',
-                      }}
-                    >
-                      <Icon name="Video" size={18} style={{ color: isOut ? '#00d4ff' : '#c084fc' }} />
-                    </div>
-                    <div>
-                      <p className="text-xs font-orbitron" style={{ color: isOut ? '#00d4ff' : '#c084fc' }}>
-                        {msg.type === 'videocircle' ? 'ВИДЕОКРУЖОК' : 'ВИДЕО'}
-                      </p>
-                      <p className="text-xs font-mono-tech" style={{ color: 'rgba(0,212,255,0.4)' }}>{formatDur(msg.duration || 0)}</p>
-                    </div>
+                  <div>
+                    {msg.fileUrl ? (
+                      <div className="relative">
+                        <video
+                          src={msg.fileUrl}
+                          controls
+                          playsInline
+                          className="max-w-full"
+                          style={{
+                            borderRadius: msg.type === 'videocircle' ? '50%' : '2px',
+                            maxWidth: msg.type === 'videocircle' ? '160px' : '240px',
+                            maxHeight: msg.type === 'videocircle' ? '160px' : '180px',
+                            display: 'block',
+                            objectFit: 'cover',
+                            border: isOut ? '1px solid rgba(0,212,255,0.3)' : '1px solid rgba(168,85,247,0.3)',
+                          }}
+                        />
+                        <a
+                          href={msg.fileUrl}
+                          download={msg.fileName || 'video.webm'}
+                          className="flex items-center gap-1 mt-1 text-xs font-mono-tech hover:opacity-80"
+                          style={{ color: isOut ? 'rgba(0,212,255,0.5)' : 'rgba(168,85,247,0.5)' }}
+                        >
+                          <Icon name="Download" size={10} /> Скачать
+                        </a>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <div
+                          className="w-12 h-12 flex items-center justify-center"
+                          style={{ background: 'rgba(0,0,0,0.3)', border: isOut ? '1px solid rgba(0,212,255,0.3)' : '1px solid rgba(168,85,247,0.3)', borderRadius: msg.type === 'videocircle' ? '50%' : '2px' }}
+                        >
+                          <Icon name="Video" size={18} style={{ color: isOut ? '#00d4ff' : '#c084fc' }} />
+                        </div>
+                        <div>
+                          <p className="text-xs font-orbitron" style={{ color: isOut ? '#00d4ff' : '#c084fc' }}>{msg.type === 'videocircle' ? 'ВИДЕОКРУЖОК' : 'ВИДЕО'}</p>
+                          <p className="text-xs font-mono-tech" style={{ color: 'rgba(0,212,255,0.4)' }}>{formatDur(msg.duration || 0)}</p>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
+
                 {msg.type === 'image' && (
                   <div className="space-y-1">
-                    <div className="w-48 h-32 flex items-center justify-center rounded relative overflow-hidden" style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(0,212,255,0.2)' }}>
-                      {msg.fileUrl ? (
-                        <img src={msg.fileUrl} alt="img" className="w-full h-full object-cover" />
-                      ) : (
-                        <Icon name="Image" size={24} style={{ color: 'rgba(0,212,255,0.3)' }} />
-                      )}
+                    <div className="max-w-xs overflow-hidden" style={{ borderRadius: '2px', border: isOut ? '1px solid rgba(0,212,255,0.2)' : '1px solid rgba(168,85,247,0.2)' }}>
+                      <img src={msg.fileUrl} alt="img" className="w-full h-auto object-cover" style={{ maxHeight: '200px' }} />
                     </div>
                     {msg.fileUrl && (
-                      <a href={msg.fileUrl} download={msg.fileName} className="flex items-center gap-1 text-xs font-mono-tech hover:opacity-80" style={{ color: isOut ? 'rgba(0,212,255,0.6)' : 'rgba(168,85,247,0.6)' }}>
+                      <a href={msg.fileUrl} download={msg.fileName || 'image'} className="flex items-center gap-1 text-xs font-mono-tech hover:opacity-80" style={{ color: isOut ? 'rgba(0,212,255,0.6)' : 'rgba(168,85,247,0.6)' }}>
                         <Icon name="Download" size={10} /> Сохранить
                       </a>
                     )}
                   </div>
                 )}
+
                 {msg.type === 'file' && (
                   <div className="flex items-center gap-2">
                     <div className="w-8 h-8 flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(0,212,255,0.2)', borderRadius: '2px' }}>
@@ -317,6 +423,7 @@ export default function ChatWindow({ currentUser, chatUserId, chat, messages, on
                     )}
                   </div>
                 )}
+
                 <div className="flex items-center justify-end gap-1 mt-1">
                   <span className="text-xs font-mono-tech" style={{ color: 'rgba(0,212,255,0.3)', fontSize: '9px' }}>{formatTime(msg.timestamp)}</span>
                   {isOut && <Icon name="CheckCheck" size={10} style={{ color: 'rgba(0,212,255,0.5)' }} />}
@@ -330,87 +437,126 @@ export default function ChatWindow({ currentUser, chatUserId, chat, messages, on
 
       {/* Input */}
       {!isBlocked && (
-        <div className="px-4 py-3" style={{ borderTop: '1px solid rgba(0,212,255,0.1)', background: 'rgba(0,5,10,0.95)' }}>
-          {recording && (
-            <div className="flex items-center gap-3 mb-2 px-3 py-2 animate-fade-in" style={{ background: 'rgba(255,0,68,0.08)', border: '1px solid rgba(255,0,68,0.3)', borderRadius: '2px' }}>
-              <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-              <span className="text-xs font-mono-tech text-red-400">
-                {recording === 'voice' ? 'ЗАПИСЬ ГОЛОСА' : recording === 'video' ? 'ЗАПИСЬ ВИДЕО' : 'ЗАПИСЬ КРУЖКА'} — {formatDur(recordingTime)}
-              </span>
-              <button onClick={stopRecording} className="ml-auto text-xs font-orbitron px-2 py-0.5 hover:opacity-80" style={{ color: '#ff0044', border: '1px solid rgba(255,0,68,0.4)', borderRadius: '2px' }}>
-                СТОП
-              </button>
+        <div className="px-4 py-3 flex-shrink-0" style={{ borderTop: '1px solid rgba(0,212,255,0.1)', background: 'rgba(0,5,10,0.95)' }}>
+
+          {/* Media error */}
+          {mediaError && (
+            <div className="flex items-center gap-2 mb-2 px-3 py-2 animate-fade-in" style={{ background: 'rgba(255,0,68,0.08)', border: '1px solid rgba(255,0,68,0.3)', borderRadius: '2px' }}>
+              <Icon name="AlertCircle" size={12} style={{ color: '#ff0044' }} />
+              <span className="text-xs font-ibm" style={{ color: '#ff0044' }}>{mediaError}</span>
+              <button onClick={() => setMediaError('')} className="ml-auto" style={{ color: 'rgba(255,0,68,0.5)' }}><Icon name="X" size={10} /></button>
             </div>
           )}
 
-          <div className="flex items-end gap-2">
-            {/* Attach */}
-            <div className="relative">
-              <button
-                onClick={() => setShowAttach(!showAttach)}
-                className="w-9 h-9 flex items-center justify-center transition-all hover:scale-110"
-                style={{ color: 'rgba(0,212,255,0.6)', border: '1px solid rgba(0,212,255,0.2)', borderRadius: '2px' }}
-              >
-                <Icon name="Paperclip" size={15} />
-              </button>
-              {showAttach && (
-                <div className="absolute bottom-10 left-0 z-50 w-44 py-1 animate-scale-in" style={{ background: 'rgba(5,10,20,0.98)', border: '1px solid rgba(0,212,255,0.2)', borderRadius: '2px' }}>
-                  <button onClick={() => fileInputRef.current?.click()} className="w-full flex items-center gap-3 px-3 py-2 text-xs font-ibm hover:bg-blue-500/10 transition-all" style={{ color: '#00d4ff' }}>
-                    <Icon name="File" size={13} /> Файл / Фото
-                  </button>
-                  <button onClick={() => { startRecording('voice'); setShowAttach(false); }} className="w-full flex items-center gap-3 px-3 py-2 text-xs font-ibm hover:bg-blue-500/10 transition-all" style={{ color: '#00d4ff' }}>
-                    <Icon name="Mic" size={13} /> Голосовое
-                  </button>
-                  <button onClick={() => { startRecording('video'); setShowAttach(false); }} className="w-full flex items-center gap-3 px-3 py-2 text-xs font-ibm hover:bg-blue-500/10 transition-all" style={{ color: '#00d4ff' }}>
-                    <Icon name="Video" size={13} /> Видеосообщение
-                  </button>
-                  <button onClick={() => { startRecording('circle'); setShowAttach(false); }} className="w-full flex items-center gap-3 px-3 py-2 text-xs font-ibm hover:bg-blue-500/10 transition-all" style={{ color: '#00d4ff' }}>
-                    <Icon name="Circle" size={13} /> Видеокружок
-                  </button>
+          {/* Recording indicator */}
+          {recording && (
+            <div className="mb-2 animate-fade-in">
+              {/* Video preview */}
+              {isVideoRec && (
+                <div className="mb-2 flex justify-center">
+                  <video
+                    ref={videoPreviewRef}
+                    muted
+                    playsInline
+                    className="bg-black"
+                    style={{
+                      width: recording === 'circle' ? '120px' : '200px',
+                      height: recording === 'circle' ? '120px' : '140px',
+                      borderRadius: recording === 'circle' ? '50%' : '4px',
+                      border: '2px solid rgba(255,0,68,0.6)',
+                      objectFit: 'cover',
+                      boxShadow: '0 0 20px rgba(255,0,68,0.3)',
+                    }}
+                  />
                 </div>
               )}
+              <div className="flex items-center gap-3 px-3 py-2" style={{ background: 'rgba(255,0,68,0.08)', border: '1px solid rgba(255,0,68,0.3)', borderRadius: '2px' }}>
+                <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse flex-shrink-0" />
+                <span className="text-xs font-mono-tech text-red-400">
+                  {recording === 'voice' ? '🎙 ГОЛОС' : recording === 'video' ? '📹 ВИДЕО' : '⭕ КРУЖОК'} — {formatDur(recordingTime)}
+                </span>
+                <button
+                  onClick={stopRecording}
+                  className="ml-auto text-xs font-orbitron px-3 py-1 transition-all hover:opacity-80"
+                  style={{ color: '#ff0044', border: '1px solid rgba(255,0,68,0.5)', borderRadius: '2px', background: 'rgba(255,0,68,0.1)' }}
+                >
+                  ОТПРАВИТЬ
+                </button>
+              </div>
             </div>
+          )}
 
-            <textarea
-              value={text}
-              onChange={e => setText(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-              placeholder="Зашифрованное сообщение..."
-              rows={1}
-              className="flex-1 resize-none outline-none text-sm font-ibm px-3 py-2"
-              style={{
-                background: 'rgba(0,212,255,0.05)',
-                border: '1px solid rgba(0,212,255,0.2)',
-                borderRadius: '2px',
-                color: currentUser.textColor || '#00d4ff',
-                maxHeight: '100px',
-                lineHeight: '1.4',
-              }}
-              onInput={e => {
-                const t = e.target as HTMLTextAreaElement;
-                t.style.height = 'auto';
-                t.style.height = Math.min(t.scrollHeight, 100) + 'px';
-              }}
-            />
+          {!recording && (
+            <div className="flex items-end gap-2">
+              {/* Attach menu */}
+              <div className="relative flex-shrink-0">
+                <button
+                  onClick={() => setShowAttach(!showAttach)}
+                  className="w-9 h-9 flex items-center justify-center transition-all hover:scale-110"
+                  style={{ color: 'rgba(0,212,255,0.6)', border: '1px solid rgba(0,212,255,0.2)', borderRadius: '2px' }}
+                >
+                  <Icon name="Paperclip" size={15} />
+                </button>
+                {showAttach && (
+                  <div className="absolute bottom-10 left-0 z-50 w-48 py-1 animate-scale-in" style={{ background: 'rgba(5,10,20,0.98)', border: '1px solid rgba(0,212,255,0.2)', borderRadius: '2px' }}>
+                    <button onClick={() => fileInputRef.current?.click()} className="w-full flex items-center gap-3 px-3 py-2.5 text-xs font-ibm hover:bg-blue-500/10 transition-all" style={{ color: '#00d4ff' }}>
+                      <Icon name="File" size={13} /> Файл / Фото
+                    </button>
+                    <button onClick={() => { startRecording('voice'); setShowAttach(false); }} className="w-full flex items-center gap-3 px-3 py-2.5 text-xs font-ibm hover:bg-blue-500/10 transition-all" style={{ color: '#00d4ff' }}>
+                      <Icon name="Mic" size={13} /> Голосовое
+                    </button>
+                    <button onClick={() => { startRecording('video'); setShowAttach(false); }} className="w-full flex items-center gap-3 px-3 py-2.5 text-xs font-ibm hover:bg-blue-500/10 transition-all" style={{ color: '#00d4ff' }}>
+                      <Icon name="Video" size={13} /> Видеосообщение
+                    </button>
+                    <button onClick={() => { startRecording('circle'); setShowAttach(false); }} className="w-full flex items-center gap-3 px-3 py-2.5 text-xs font-ibm hover:bg-blue-500/10 transition-all" style={{ color: '#00d4ff' }}>
+                      <Icon name="Circle" size={13} /> Видеокружок
+                    </button>
+                  </div>
+                )}
+              </div>
 
-            <button
-              onClick={handleSend}
-              disabled={!text.trim()}
-              className="w-9 h-9 flex items-center justify-center transition-all hover:scale-110 flex-shrink-0"
-              style={{
-                background: text.trim() ? '#00d4ff' : 'rgba(0,212,255,0.1)',
-                color: text.trim() ? '#050a0f' : 'rgba(0,212,255,0.3)',
-                borderRadius: '2px',
-                boxShadow: text.trim() ? '0 0 15px rgba(0,212,255,0.4)' : 'none',
-              }}
-            >
-              <Icon name="Send" size={15} />
-            </button>
-          </div>
+              <textarea
+                value={text}
+                onChange={e => setText(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+                placeholder="Зашифрованное сообщение..."
+                rows={1}
+                className="flex-1 resize-none outline-none text-sm font-ibm px-3 py-2"
+                style={{
+                  background: 'rgba(0,212,255,0.05)',
+                  border: '1px solid rgba(0,212,255,0.2)',
+                  borderRadius: '2px',
+                  color: currentUser.textColor || '#00d4ff',
+                  maxHeight: '100px',
+                  lineHeight: '1.4',
+                }}
+                onInput={e => {
+                  const t = e.target as HTMLTextAreaElement;
+                  t.style.height = 'auto';
+                  t.style.height = Math.min(t.scrollHeight, 100) + 'px';
+                }}
+              />
+
+              <button
+                onClick={handleSend}
+                disabled={!text.trim()}
+                className="w-9 h-9 flex items-center justify-center transition-all hover:scale-110 flex-shrink-0"
+                style={{
+                  background: text.trim() ? '#00d4ff' : 'rgba(0,212,255,0.1)',
+                  color: text.trim() ? '#050a0f' : 'rgba(0,212,255,0.3)',
+                  borderRadius: '2px',
+                  boxShadow: text.trim() ? '0 0 15px rgba(0,212,255,0.4)' : 'none',
+                }}
+              >
+                <Icon name="Send" size={15} />
+              </button>
+            </div>
+          )}
         </div>
       )}
+
       {isBlocked && (
-        <div className="px-4 py-4 text-center" style={{ borderTop: '1px solid rgba(255,0,68,0.1)' }}>
+        <div className="px-4 py-4 text-center flex-shrink-0" style={{ borderTop: '1px solid rgba(255,0,68,0.1)' }}>
           <p className="text-xs font-orbitron" style={{ color: 'rgba(255,0,68,0.6)' }}>ПОЛЬЗОВАТЕЛЬ ЗАБЛОКИРОВАН</p>
         </div>
       )}
@@ -424,13 +570,13 @@ export default function ChatWindow({ currentUser, chatUserId, chat, messages, on
               <h3 className="font-orbitron font-bold text-sm" style={{ color: '#ff4444' }}>УДАЛЕНИЕ ЧАТА</h3>
             </div>
             <p className="text-xs font-ibm mb-4" style={{ color: 'rgba(0,212,255,0.6)' }}>
-              {showDeleteConfirm === 'both' ? 'Удалить чат у обоих пользователей? Это действие необратимо.' : 'Удалить чат только у себя?'}
+              {showDeleteConfirm === 'both' ? 'Удалить чат и все сообщения у обоих пользователей?' : 'Удалить чат только у себя?'}
             </p>
             <div className="flex gap-3">
               <button
                 onClick={() => { onDeleteChat(showDeleteConfirm === 'both'); setShowDeleteConfirm(null); }}
                 className="flex-1 py-2 text-xs font-orbitron font-bold transition-all"
-                style={{ background: 'rgba(255,0,68,0.2)', color: '#ff4444', border: '1px solid rgba(255,0,68,0.4)', borderRadius: '2px' }}
+                style={{ background: 'rgba(255,0,68,0.15)', color: '#ff4444', border: '1px solid rgba(255,0,68,0.4)', borderRadius: '2px' }}
               >
                 УДАЛИТЬ
               </button>
@@ -450,22 +596,26 @@ export default function ChatWindow({ currentUser, chatUserId, chat, messages, on
       {showVoiceEffects && (
         <div className="absolute inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)' }}>
           <div className="p-6 max-w-xs w-full mx-4 animate-scale-in" style={{ background: 'rgba(5,10,15,0.98)', border: '1px solid rgba(0,212,255,0.2)', borderRadius: '2px' }}>
-            <h3 className="font-orbitron font-bold text-sm mb-4 text-neon-blue">ЭФФЕКТЫ ГОЛОСА</h3>
+            <h3 className="font-orbitron font-bold text-sm mb-1 text-neon-blue">ЭФФЕКТЫ ГОЛОСА</h3>
+            <p className="text-xs font-mono-tech mb-4" style={{ color: 'rgba(0,212,255,0.3)' }}>Применяются к следующим записям</p>
             <div className="space-y-2 mb-4">
               {VOICE_EFFECTS.map(e => (
                 <button
-                  key={e}
-                  onClick={() => setVoiceEffect(e)}
-                  className="w-full py-2 px-3 text-xs font-ibm text-left transition-all"
+                  key={e.id}
+                  onClick={() => setVoiceEffectId(e.id)}
+                  className="w-full py-2 px-3 text-xs font-ibm text-left transition-all flex items-center gap-2"
                   style={{
-                    background: voiceEffect === e ? 'rgba(0,212,255,0.15)' : 'transparent',
-                    border: voiceEffect === e ? '1px solid rgba(0,212,255,0.5)' : '1px solid rgba(0,212,255,0.1)',
+                    background: voiceEffectId === e.id ? 'rgba(0,212,255,0.12)' : 'transparent',
+                    border: voiceEffectId === e.id ? '1px solid rgba(0,212,255,0.5)' : '1px solid rgba(0,212,255,0.1)',
                     borderRadius: '2px',
-                    color: voiceEffect === e ? '#00d4ff' : 'rgba(0,212,255,0.5)',
-                    boxShadow: voiceEffect === e ? '0 0 8px rgba(0,212,255,0.2)' : 'none',
+                    color: voiceEffectId === e.id ? '#00d4ff' : 'rgba(0,212,255,0.5)',
                   }}
                 >
-                  {e === voiceEffect ? '◆ ' : '◇ '}{e}
+                  <Icon name={voiceEffectId === e.id ? 'CheckCircle' : 'Circle'} size={12} />
+                  {e.label}
+                  <span className="ml-auto font-mono-tech" style={{ fontSize: '9px', color: 'rgba(0,212,255,0.3)' }}>
+                    pitch×{e.pitch}
+                  </span>
                 </button>
               ))}
             </div>
@@ -481,6 +631,61 @@ export default function ChatWindow({ currentUser, chatUserId, chat, messages, on
       )}
 
       <input type="file" ref={fileInputRef} className="hidden" onChange={handleFile} accept="*/*" />
+    </div>
+  );
+}
+
+// Inline audio player component
+function AudioPlayer({ url, isOut, duration }: { url: string; isOut: boolean; duration: number }) {
+  const [playing, setPlaying] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+  const audioRef = useRef<HTMLAudioElement>(null);
+
+  const toggle = () => {
+    const a = audioRef.current;
+    if (!a) return;
+    if (playing) { a.pause(); setPlaying(false); }
+    else { a.play(); setPlaying(true); }
+  };
+
+  const formatDur = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
+
+  return (
+    <div className="flex items-center gap-2 min-w-[200px]">
+      <audio
+        ref={audioRef}
+        src={url}
+        onTimeUpdate={e => {
+          const a = e.currentTarget;
+          setCurrentTime(a.currentTime);
+          setProgress(a.duration ? (a.currentTime / a.duration) * 100 : 0);
+        }}
+        onEnded={() => { setPlaying(false); setProgress(0); setCurrentTime(0); }}
+      />
+      <button
+        onClick={toggle}
+        className="w-7 h-7 flex items-center justify-center rounded-full flex-shrink-0 transition-all hover:scale-110"
+        style={{ background: isOut ? 'rgba(0,212,255,0.25)' : 'rgba(168,85,247,0.25)', color: isOut ? '#00d4ff' : '#c084fc', border: `1px solid ${isOut ? 'rgba(0,212,255,0.4)' : 'rgba(168,85,247,0.4)'}` }}
+      >
+        <Icon name={playing ? 'Pause' : 'Play'} size={12} />
+      </button>
+
+      <div className="flex-1 flex flex-col gap-1">
+        <div className="relative h-1 rounded-full overflow-hidden" style={{ background: isOut ? 'rgba(0,212,255,0.15)' : 'rgba(168,85,247,0.15)' }}>
+          <div
+            className="absolute left-0 top-0 h-full rounded-full transition-all"
+            style={{ width: `${progress}%`, background: isOut ? '#00d4ff' : '#c084fc', boxShadow: isOut ? '0 0 4px #00d4ff' : '0 0 4px #c084fc' }}
+          />
+        </div>
+        <span className="text-xs font-mono-tech" style={{ color: isOut ? 'rgba(0,212,255,0.5)' : 'rgba(168,85,247,0.5)', fontSize: '9px' }}>
+          {playing ? formatDur(Math.round(currentTime)) : formatDur(duration)}
+        </span>
+      </div>
+
+      <a href={url} download="voice.webm" className="flex-shrink-0 hover:opacity-80 transition-all" style={{ color: isOut ? 'rgba(0,212,255,0.4)' : 'rgba(168,85,247,0.4)' }}>
+        <Icon name="Download" size={12} />
+      </a>
     </div>
   );
 }
